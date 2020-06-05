@@ -14,11 +14,18 @@ import (
 	"github.com/gree-gorey/bash-exporter/pkg/run"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/InVisionApp/go-health"
+	"github.com/InVisionApp/go-health/handlers"
 )
 
 var (
 	verbMetrics *prometheus.GaugeVec
 )
+
+type customCheck struct {
+	script string
+}
 
 func main() {
 	addr := flag.String("web.listen-address", ":9300", "Address on which to expose metrics")
@@ -32,7 +39,7 @@ func main() {
 	var labelsArr []string
 
 	labelsArr = strings.Split(*labels, ",")
-	labelsArr = append(labelsArr, "verb",  "job")
+	labelsArr = append(labelsArr, "verb", "job")
 
 	verbMetrics = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -56,6 +63,22 @@ func main() {
 		}
 	}
 
+	h := health.New()
+	cc := &customCheck{script: *path}
+	// Add the checks to the health instance
+	h.AddChecks([]*health.Config{
+		{
+			Name:     "scripts-check",
+			Checker:  cc,
+			Interval: time.Duration(2) * time.Second,
+			Fatal:    true,
+		},
+	})
+	if err := h.Start(); err != nil {
+		log.Fatalf("Unable to start healthcheck: %v", err)
+	}
+
+	http.HandleFunc("/health", handlers.NewJSONHandlerFunc(h, nil))
 	http.Handle("/metrics", promhttp.Handler())
 	go Run(int(*interval), *path, names, labelsArr, *debug)
 	log.Fatal(http.ListenAndServe(*addr, nil))
@@ -88,7 +111,7 @@ func Run(interval int, path string, names []string, labelsArr []string, debug bo
 			for metric, value := range o.Schema.Results {
 				for _, label := range labelsArr {
 					if _, ok := o.Schema.Labels[label]; !ok {
-					   o.Schema.Labels[label] = ""
+						o.Schema.Labels[label] = ""
 					}
 				}
 				o.Schema.Labels["verb"] = metric
@@ -98,5 +121,16 @@ func Run(interval int, path string, names []string, labelsArr []string, debug bo
 			}
 		}
 		time.Sleep(time.Duration(interval) * time.Second)
+	}
+}
+
+func (c *customCheck) Status() (interface{}, error) {
+	files, err := ioutil.ReadDir(c.script)
+	if err != nil {
+		return nil, err
+	} else if len(files) <= 0 {
+		return nil, fmt.Errorf("Script dir is empty")
+	} else {
+		return nil, nil
 	}
 }
